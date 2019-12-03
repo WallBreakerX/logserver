@@ -104,23 +104,24 @@ void EmptyLink(void) {
 
 	return;
 }
-Linkinfo* Selectfd(fd_set* FDlist) {//select函数
+Linkinfo* Selectfd(void) {//select函数
 	struct timeval timecnt;
 	timecnt.tv_usec = 0;//初始化select函数等待时间，置0
 	timecnt.tv_sec = 0;
 
 	Linkinfo* plink = LinkHead;
 	int max_fd = 0;
-	FD_ZERO(FDlist);
+	fd_set FDlist;
+	FD_ZERO(&FDlist);
 	for (int i = 0; i < LinkLen; i++) {
-		FD_SET(plink->fd, FDlist);
+		FD_SET(plink->fd, &FDlist);
 		max_fd = plink->fd > max_fd ? plink->fd : max_fd;
 		plink = plink->next;
 	}
-	if (select(max_fd + 1, FDlist, NULL, NULL, &timecnt) > 0) {
+	if (select(max_fd + 1, &FDlist, NULL, NULL, &timecnt) > 0) {
 		plink = LinkHead;
 		for (int i = 0; i < LinkLen; i++) {
-			if (FD_ISSET(plink->fd, FDlist)) {
+			if (FD_ISSET(plink->fd, &FDlist)) {
 				return plink;
 			}
 			plink = plink->next;
@@ -131,13 +132,11 @@ Linkinfo* Selectfd(fd_set* FDlist) {//select函数
 }
 
 void serverthread(void* args) {
-	fd_set* FDlist = (fd_set*)args;
-
 	Linkinfo* plink;
 	datapkg *recvpkg;
 
 	while (ThreadAlive) {
-		plink = Selectfd(FDlist);
+		plink = Selectfd();
 		if (plink) {
 			char recvstr[sizeof(datapkg)] = { 0 };
 			if (recv(plink->fd, recvstr, sizeof(datapkg), NULL) > 0) {
@@ -175,15 +174,12 @@ void serverthread(void* args) {
 }
 
 
-
-
 int main(int argc, char* argv[])
 {
 	char ADDR[32] = {0};
 	int PORT = 0;
-	char str[32] = "127.0.0.1";
 	if (argc == 1) {
-		strcpy(ADDR, str);
+		strcpy(ADDR, DEFAULTADDR);
 		PORT = DEFAULTPORT;
 	}
 	else if (argc == 3) {
@@ -195,7 +191,7 @@ int main(int argc, char* argv[])
 		return 0;
 	}
 	printf("==========SERVER==========\n");
-	printf("IP:%s\nPORT:%d", ADDR, PORT);
+	printf("IP:%s\tPORT:%d\n", ADDR, PORT);
 	
 	fd_set clientset;
 	FD_ZERO(&clientset);
@@ -243,7 +239,7 @@ int main(int argc, char* argv[])
 	sockaddr_in remoteAddr;
 	int nAddrlen = sizeof(remoteAddr);
 
-	if (_beginthread(serverthread, 0, &clientset) == NULL) {
+	if (_beginthread(serverthread, 0, NULL) == NULL) {
 		printf("Create thread failed\n");
 		return 0;
 	}
@@ -265,7 +261,7 @@ int main(int argc, char* argv[])
 			printf("accept error !");
 			continue;
 		}
-		printf("Start Receiving files...\n");
+		printf("\nStart Receiving files...\n");
 		AddLink(client);
 	}
 
@@ -275,5 +271,3 @@ int main(int argc, char* argv[])
 
 	return 0;
 }
-
-
