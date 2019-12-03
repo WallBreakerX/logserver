@@ -2,7 +2,12 @@
 #include <stdlib.h>
 #include <winsock2.h>
 #include <process.h> 
+#include <conio.h>
 #pragma comment(lib,"ws2_32.lib")
+
+#define DEFAULTADDR	"127.0.0.1"
+#define DEFAULTPORT 8080
+
 
 typedef struct {
 	char filename[32];
@@ -12,73 +17,188 @@ typedef struct {
 }datapkg;
 
 
-typedef struct {
+struct linkinfo{
 	int fd;
 	FILE* fp;
-	struct Linkinfo* next;
-}Linkinfo;
+	char filename[32];
+	struct linkinfo* next;
+};
+typedef struct linkinfo Linkinfo;
 
+int ThreadAlive = 1;
 int LinkLen = 0;
-Linkinfo* LindHead = NULL;
+Linkinfo* LinkHead = NULL;
 
+int AddLink(SOCKET fd) {//创建新用户链表节点
+	Linkinfo* p, * pt, * phead = NULL;
+	p = (Linkinfo*)malloc(sizeof(Linkinfo));//为链表创建空间 
+	if (p == NULL)
+		return -1;
+	p->fd = fd;
+	p->fp = NULL;
+	p->next = NULL;
+	if (LinkHead == NULL) {
+		LinkHead = p;
+	}
+	else {
+		phead = LinkHead;
+		for (int i = 0; i < (LinkLen - 1); i++)
+			phead = phead->next;
+		phead->next = p;
+	}
+	++LinkLen;
 
-void serverthread(void* arg) {
-	printf("传输中...\n");
-	SOCKET* clientsocket = (SOCKET*)arg;
-
-	datapkg* recvpkg = NULL;
-	FILE* fp = NULL;
-	char filename[64];
+	return 0;
+}
+void DelLink(SOCKET fd) {
+	Linkinfo* plink, * pformer;
+	closesocket(fd);
+	plink = LinkHead;
 	int i;
-	int recvTimeout = 2 * 1000;
-	setsockopt(*clientsocket, SOL_SOCKET, SO_RCVTIMEO, (char*)& recvTimeout, sizeof(int));
-
-	while (TRUE) {
-		char recvdata[sizeof(datapkg)] = { 0 };
-		if (recv(*clientsocket, recvdata, sizeof(datapkg), NULL) == 0) {
-			closesocket(*clientsocket);
-			free(clientsocket);
-			if (fp != NULL)
-				fclose(fp);
-			printf("接收超时，请客户端重新发起连接\n");
+	for (i = 0; i < LinkLen; i++) {
+		if ((fd == plink->fd) && (i == 0)) {
+			if (plink->fp != NULL) {
+				fclose(plink->fp);
+				plink->fp = NULL;
+			}
+			LinkHead = plink->next;
+			free(plink);
+			--LinkLen;
 			return;
 		}
-
-		recvpkg = (datapkg*)recvdata;
-		if (recvpkg->trans_stat == 0) {//第一次发送
-			sprintf_s(filename, "./%s", recvpkg->filename);
-			errno_t err;
-			fopen_s(&fp, filename, "w");
+		pformer = plink;
+		plink = plink->next;
+		if ((fd == plink->fd) && (plink->next == NULL)) {
+			if (plink->fp != NULL) {
+				fclose(plink->fp);
+				plink->fp = NULL;
+			}
+			free(plink);
+			plink = NULL;
+			--LinkLen;
+			return;
 		}
-		else if (recvpkg->trans_stat == 1) {//发送中
-			fwrite(recvpkg->content, recvpkg->content_len, 1, fp);
-		}
-		else if (recvpkg->trans_stat == -1) {//发送结束
-			//fwrite(recvpkg->content, recvpkg->content_len, 1, fp);
-			fclose(fp);
-			break;
+		else if (fd == plink->fd) {
+			if (plink->fp != NULL) {
+				fclose(plink->fp);
+				plink->fp = NULL;
+			}
+			pformer->next = plink->next;
+			free(plink);
+			--LinkLen;
+			return;
 		}
 	}
-	closesocket(*clientsocket);
-	free(clientsocket);
-	printf("\n传输完毕\nlog文件路径: %s\n", filename);
+}
+
+void EmptyLink(void) {
+	Linkinfo* plink = LinkHead;
+	for (int i = 0; i < LinkLen; i++) {
+		Linkinfo* pformer = plink;
+		plink = plink->next;
+		fclose(pformer->fp);
+		closesocket(pformer->fd);
+		free(pformer);
+	}
+	LinkHead = NULL;
+
+	return;
+}
+Linkinfo* Selectfd(fd_set* FDlist) {//select函数
+	struct timeval timecnt;
+	timecnt.tv_usec = 0;//初始化select函数等待时间，置0
+	timecnt.tv_sec = 0;
+
+	Linkinfo* plink = LinkHead;
+	int max_fd = 0;
+	FD_ZERO(FDlist);
+	for (int i = 0; i < LinkLen; i++) {
+		FD_SET(plink->fd, FDlist);
+		max_fd = plink->fd > max_fd ? plink->fd : max_fd;
+		plink = plink->next;
+	}
+	if (select(max_fd + 1, FDlist, NULL, NULL, &timecnt) > 0) {
+		plink = LinkHead;
+		for (int i = 0; i < LinkLen; i++) {
+			if (FD_ISSET(plink->fd, FDlist)) {
+				return plink;
+			}
+			plink = plink->next;
+		}
+	}
+
+	return NULL;
+}
+
+void serverthread(void* args) {
+	fd_set* FDlist = (fd_set*)args;
+
+	Linkinfo* plink;
+	datapkg *recvpkg;
+
+	while (ThreadAlive) {
+		plink = Selectfd(FDlist);
+		if (plink) {
+			char recvstr[sizeof(datapkg)] = { 0 };
+			if (recv(plink->fd, recvstr, sizeof(datapkg), NULL) > 0) {
+				recvpkg = (datapkg*)recvstr;
+				if (recvpkg->trans_stat == 0) {
+					char path[64];
+					sprintf(path, ".\\%s", recvpkg->filename);
+					if (fopen_s(&plink->fp, path, "w+") != 0) {
+						printf("Open file failed\n");
+						DelLink(plink->fd);//删除节点
+						continue;
+					}
+					strcpy(plink->filename, recvpkg->filename);
+					continue;
+				}
+				else if (recvpkg->trans_stat == 1) {
+					fwrite(recvpkg->content, recvpkg->content_len, 1, plink->fp);
+					continue;
+				}
+				else if (recvpkg->trans_stat == -1) {
+					printf("Finished\nFilepath: .\\%s\n", plink->filename);
+					DelLink(plink->fd);//删除节点并关闭文件
+					continue;
+				}
+			}
+			else {
+				fprintf(stderr, "\nDisconnected :%s", strerror(errno));
+				DelLink(plink->fd);//删除节点并关闭文件
+				continue;
+			}
+		}
+	}
 
 	return;
 }
 
 
+
+
 int main(int argc, char* argv[])
 {
-	if (argc != 3) {
-		printf(".\\logserver IP PORT\n");
+	char ADDR[32] = {0};
+	int PORT = 0;
+	char str[32] = "127.0.0.1";
+	if (argc == 1) {
+		strcpy(ADDR, str);
+		PORT = DEFAULTPORT;
+	}
+	else if (argc == 3) {
+		strcpy(ADDR, argv[1]);
+		PORT = atoi(argv[2]);
+	}
+	else {
+		printf(".\\logserver (default IP:127.0.0.1 Port:8080)\nor\n.\\logserver IP PORT\n");
 		return 0;
 	}
 	printf("==========SERVER==========\n");
-	fd_set fd;
-	FD_ZERO(&fd);
-	char* ADDR = argv[1];
-	int PORT = atoi(argv[2]);
-
+	printf("IP:%s\nPORT:%d", ADDR, PORT);
+	
+	fd_set clientset;
+	FD_ZERO(&clientset);
 	WORD sockVersion = MAKEWORD(2, 2);
 	WSADATA wsaData;
 	if (WSAStartup(sockVersion, &wsaData) != 0)
@@ -94,6 +214,11 @@ int main(int argc, char* argv[])
 	}
 	char allow = 1;
 	setsockopt(slisten, SOL_SOCKET, SO_REUSEADDR, &allow, sizeof(char));
+	unsigned long ul = 1;
+	if (ioctlsocket(slisten, FIONBIO, (unsigned long*)& ul) == SOCKET_ERROR) {
+		printf("Configure Socket failed\n");
+		return 0;
+	}
 
 	sockaddr_in sin;
 	sin.sin_family = AF_INET;
@@ -102,11 +227,14 @@ int main(int argc, char* argv[])
 
 	if (bind(slisten, (LPSOCKADDR)& sin, sizeof(sin)) == SOCKET_ERROR)
 	{
+		closesocket(slisten);
 		printf("bind error !");
+		return 0;
 	}
 
-	if (listen(slisten, 5) == SOCKET_ERROR)
+	if (listen(slisten, 64) == SOCKET_ERROR)
 	{
+		closesocket(slisten);
 		printf("listen error !");
 		return 0;
 	}
@@ -115,26 +243,37 @@ int main(int argc, char* argv[])
 	sockaddr_in remoteAddr;
 	int nAddrlen = sizeof(remoteAddr);
 
+	if (_beginthread(serverthread, 0, &clientset) == NULL) {
+		printf("Create thread failed\n");
+		return 0;
+	}
+
 	while (true)
 	{
-		SOCKET* client = (SOCKET*)malloc(sizeof(SOCKET));
-		*client = accept(slisten, (SOCKADDR*)& remoteAddr, &nAddrlen);
-		if (*client == INVALID_SOCKET)
+		if (_kbhit()) {
+			int key = _getch();
+			if (key == 27) {
+				ThreadAlive = 0;
+				break; 
+			}
+		}
+		SOCKET client = accept(slisten, (SOCKADDR*)& remoteAddr, &nAddrlen);
+		if (client == SOCKET_ERROR)
+			continue;
+		if (client == INVALID_SOCKET)
 		{
-			free(client);
 			printf("accept error !");
 			continue;
 		}
-		printf("客户端接入\n");
-
-		if (_beginthread(serverthread, 0, client) == NULL) {
-			printf("Create thread failed\n");
-			free(client);
-			continue;
-		}
+		printf("Start Receiving files...\n");
+		AddLink(client);
 	}
+
 	closesocket(slisten);
+	EmptyLink();
 	WSACleanup();
 
 	return 0;
 }
+
+
