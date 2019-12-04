@@ -30,7 +30,7 @@ int LinkLen = 0;
 Linkinfo* LinkHead = NULL;
 
 int AddLink(SOCKET fd) {//创建新用户链表节点
-	Linkinfo* p, * pt, * phead = NULL;
+	Linkinfo* p, * phead = NULL;
 	p = (Linkinfo*)malloc(sizeof(Linkinfo));//为链表创建空间 
 	if (p == NULL)
 		return -1;
@@ -235,7 +235,6 @@ int main(int argc, char* argv[])
 		return 0;
 	}
 
-	SOCKET sClient;
 	sockaddr_in remoteAddr;
 	int nAddrlen = sizeof(remoteAddr);
 
