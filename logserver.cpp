@@ -5,22 +5,22 @@
 #include <conio.h>
 #pragma comment(lib,"ws2_32.lib")
 
-#define DEFAULTADDR	"127.0.0.1"
-#define DEFAULTPORT 8080
+#define DEFAULTADDR	"172.16.24.17"
+#define DEFAULTPORT 12345
 
 
 typedef struct {
-	char filename[32];
+	char filename[32];//
 	char content[64];
 	int content_len;
-	int trans_stat;
+	int trans_stat;//0 1 -1
 }datapkg;
 
 
 struct linkinfo{
 	int fd;
 	FILE* fp;
-	char filename[32];
+	char filename[64];
 	struct linkinfo* next;
 };
 typedef struct linkinfo Linkinfo;
@@ -235,8 +235,7 @@ int main(int argc, char* argv[])
 		return 0;
 	}
 
-	sockaddr_in remoteAddr;
-	int nAddrlen = sizeof(remoteAddr);
+	int nAddrlen = sizeof(sin);
 
 	if (_beginthread(serverthread, 0, NULL) == NULL) {
 		printf("Create thread failed\n");
@@ -252,7 +251,7 @@ int main(int argc, char* argv[])
 				break; 
 			}
 		}
-		SOCKET client = accept(slisten, (SOCKADDR*)& remoteAddr, &nAddrlen);
+		SOCKET client = accept(slisten, (SOCKADDR*)& sin, &nAddrlen);
 		if (client == SOCKET_ERROR)
 			continue;
 		if (client == INVALID_SOCKET)
