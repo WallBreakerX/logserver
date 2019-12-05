@@ -3,11 +3,12 @@
 #include <winsock2.h>
 #include <process.h> 
 #include <conio.h>
+#include<time.h>
 #pragma comment(lib,"ws2_32.lib")
 
-#define DEFAULTADDR	"172.16.24.17"
-#define DEFAULTPORT 12345
-
+#define DEFAULTADDR	"127.0.0.1"
+#define DEFAULTPORT 7070
+#define SIZE		512
 
 typedef struct {
 	char filename[32];//
@@ -19,24 +20,44 @@ typedef struct {
 
 struct linkinfo{
 	int fd;
+	int line;
 	FILE* fp;
 	char filename[64];
+	char buffer[SIZE];
+	int buffer_len;
 	struct linkinfo* next;
 };
 typedef struct linkinfo Linkinfo;
+
 
 int ThreadAlive = 1;
 int LinkLen = 0;
 Linkinfo* LinkHead = NULL;
 
-int AddLink(SOCKET fd) {//创建新用户链表节点
+
+void ResetLink(Linkinfo* link) {//清空结点数据（非删除）
+	if (link->fp != NULL) {
+		fclose(link->fp);
+		link->fp = NULL;
+	}
+	memset(link->filename, 0, 64);
+	memset(link->buffer, 0, SIZE);
+	link->buffer_len = 0;
+	link->line = 0;
+}
+
+int AddLink(SOCKET fd) {//创建新客户端链表节点
 	Linkinfo* p, * phead = NULL;
-	p = (Linkinfo*)malloc(sizeof(Linkinfo));//为链表创建空间 
+	p = (Linkinfo*)malloc(sizeof(Linkinfo));
 	if (p == NULL)
 		return -1;
-	p->fd = fd;
 	p->fp = NULL;
-	p->next = NULL;
+	memset(p->filename, 0, 64);
+	memset(p->buffer, 0, SIZE);
+	p->buffer_len = 0;
+	p->line = 0;
+	p->fd = fd;
+
 	if (LinkHead == NULL) {
 		LinkHead = p;
 	}
@@ -50,55 +71,53 @@ int AddLink(SOCKET fd) {//创建新用户链表节点
 
 	return 0;
 }
-void DelLink(SOCKET fd) {
+
+void DelLink(SOCKET fd) {//删除结点
 	Linkinfo* plink, * pformer;
 	closesocket(fd);
+	fprintf(stderr, "%d Disconnected:%s\n", fd, strerror(errno));
 	plink = LinkHead;
 	int i;
 	for (i = 0; i < LinkLen; i++) {
 		if ((fd == plink->fd) && (i == 0)) {
-			if (plink->fp != NULL) {
-				fclose(plink->fp);
-				plink->fp = NULL;
-			}
 			LinkHead = plink->next;
+			ResetLink(plink);
 			free(plink);
+			plink = NULL;
 			--LinkLen;
-			return;
+			break;
 		}
 		pformer = plink;
 		plink = plink->next;
 		if ((fd == plink->fd) && (plink->next == NULL)) {
-			if (plink->fp != NULL) {
-				fclose(plink->fp);
-				plink->fp = NULL;
-			}
+			pformer->next = NULL;
+			ResetLink(plink);
 			free(plink);
 			plink = NULL;
 			--LinkLen;
-			return;
+			break;
 		}
 		else if (fd == plink->fd) {
-			if (plink->fp != NULL) {
-				fclose(plink->fp);
-				plink->fp = NULL;
-			}
 			pformer->next = plink->next;
+			ResetLink(plink);
 			free(plink);
+			plink = NULL;
 			--LinkLen;
-			return;
+			break;
 		}
 	}
 }
 
-void EmptyLink(void) {
+void EmptyLink(void) {//清空并删除链表
 	Linkinfo* plink = LinkHead;
 	for (int i = 0; i < LinkLen; i++) {
 		Linkinfo* pformer = plink;
 		plink = plink->next;
-		fclose(pformer->fp);
+		if (pformer->fp != NULL)
+			fclose(pformer->fp);
 		closesocket(pformer->fd);
 		free(pformer);
+		pformer = NULL;
 	}
 	LinkHead = NULL;
 
@@ -131,6 +150,36 @@ Linkinfo* Selectfd(void) {//select函数
 	return NULL;
 }
 
+void Setfilename(char* filename, char* linkfilename) {
+	time_t ptime;
+	struct tm* p;
+	time(&ptime);
+	p = gmtime(&ptime);
+	char tmpstr[64] = { 0 };
+	memcpy(tmpstr, filename, 64);
+	sprintf(filename, ".\\%s_%d-%02d-%02d-%02d_%02d_%02d.txt", tmpstr, 1900 + p->tm_year, 1 + p->tm_mon, p->tm_mday, 8 + p->tm_hour, p->tm_min, p->tm_sec);
+
+	memcpy(linkfilename, filename, 64);
+}
+
+
+void Writetofile(Linkinfo* link) {
+	for (int i = 0; i < link->buffer_len; i++) {
+		if (link->buffer[i] != 0x00)
+			fwrite(&(link->buffer[i]), 1, 1, link->fp);
+	}
+	memset(link->buffer, 0, SIZE);
+	link->buffer_len = 0;
+}
+
+
+void LinkAddData(Linkinfo* link, char data) {
+	link->buffer[link->buffer_len] = data;
+	link->buffer_len += 1;
+}
+
+
+
 void serverthread(void* args) {
 	Linkinfo* plink;
 	datapkg *recvpkg;
@@ -138,34 +187,64 @@ void serverthread(void* args) {
 	while (ThreadAlive) {
 		plink = Selectfd();
 		if (plink) {
-			char recvstr[sizeof(datapkg)] = { 0 };
-			if (recv(plink->fd, recvstr, sizeof(datapkg), NULL) > 0) {
-				recvpkg = (datapkg*)recvstr;
-				if (recvpkg->trans_stat == 0) {
-					char path[64];
-					sprintf(path, ".\\%s", recvpkg->filename);
-					if (fopen_s(&plink->fp, path, "w+") != 0) {
-						printf("Open file failed\n");
-						DelLink(plink->fd);//删除节点
-						continue;
+			char recvstr[SIZE] = { 0 };
+			if (recv(plink->fd, recvstr, sizeof(recvstr), NULL) > 0) {
+				if (plink->line == 0) {
+					char header[64] = { 0 }, tag[64] = { 0 };
+					sscanf(recvstr, "<%[a-z]>{\"tag\":\"%[^\"]\"}", header, tag);
+					printf("===== tag =====\n%s\n", tag);
+					if (strcmp(header, "logheader") == 0) {
+						Setfilename(tag, plink->filename);
+						if (fopen_s(&plink->fp, plink->filename, "w") != 0) {
+							fprintf(stderr, "Open %s failed:%s, retry.\n", plink->filename, strerror(errno));
+							ResetLink(plink);
+							continue;
+						}
+						for (int i = 0; i < SIZE; i++) {
+							if (recvstr[i] == '\n' && plink->line == 0)
+								plink->line = 1;
+							else if (plink->line > 0) {
+								if (recvstr[i] != '\n') {
+									char end[64] = { 0 };
+									sscanf(plink->buffer, "%*[^<]<%[a-z]>%*[^>]", end);
+									if (strcmp(end, "logend") == 0) {
+										printf("===== Receive over =====\n%s\n", plink->filename);
+										ResetLink(plink);
+										break;
+									}
+								}
+								else
+									Writetofile(plink);
+								LinkAddData(plink, recvstr[i]);
+							}
+						}
+						if (plink != NULL) {
+							if (plink->line == 0) {
+								ResetLink(plink);
+								printf("Receive error, retry.\n");
+							}
+						}
 					}
-					strcpy(plink->filename, recvpkg->filename);
-					continue;
 				}
-				else if (recvpkg->trans_stat == 1) {
-					fwrite(recvpkg->content, recvpkg->content_len, 1, plink->fp);
-					continue;
-				}
-				else if (recvpkg->trans_stat == -1) {
-					printf("Finished\nFilepath: .\\%s\n", plink->filename);
-					DelLink(plink->fd);//删除节点并关闭文件
-					continue;
+				else {
+					for (int i = 0; i < SIZE; i++) {
+						if (recvstr[i] != '\n') {
+							char end[64] = { 0 };
+							sscanf(plink->buffer, "%*[^<]<%6[a-z]>%*[^>]", end);
+							if (strcmp(end, "logend") == 0) {
+								printf("===== Receive over =====\n%s\n", plink->filename);
+								ResetLink(plink);
+								break;
+							}
+						}
+						else 
+							Writetofile(plink);
+						LinkAddData(plink, recvstr[i]);
+					}
 				}
 			}
 			else {
-				fprintf(stderr, "\nDisconnected :%s", strerror(errno));
 				DelLink(plink->fd);//删除节点并关闭文件
-				continue;
 			}
 		}
 	}
@@ -187,11 +266,12 @@ int main(int argc, char* argv[])
 		PORT = atoi(argv[2]);
 	}
 	else {
-		printf(".\\logserver (default IP:127.0.0.1 Port:8080)\nor\n.\\logserver IP PORT\n");
+		printf(".\\logserver (Default IP:172.16.24.17 Port:12345)\nor\n.\\logserver IP PORT\n");
 		return 0;
 	}
-	printf("==========SERVER==========\n");
-	printf("IP:%s\tPORT:%d\n", ADDR, PORT);
+	printf("==================SERVER==================\n");
+	printf("IP:%s			PORT:%d\n", ADDR, PORT);
+	printf("==========================================\n\n");
 	
 	fd_set clientset;
 	FD_ZERO(&clientset);
@@ -205,14 +285,14 @@ int main(int argc, char* argv[])
 	SOCKET slisten = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 	if (slisten == INVALID_SOCKET)
 	{
-		printf("socket error !");
+		printf("Socket error !\n");
 		return 0;
 	}
 	char allow = 1;
 	setsockopt(slisten, SOL_SOCKET, SO_REUSEADDR, &allow, sizeof(char));
 	unsigned long ul = 1;
 	if (ioctlsocket(slisten, FIONBIO, (unsigned long*)& ul) == SOCKET_ERROR) {
-		printf("Configure Socket failed\n");
+		printf("Configure socket failed\n");
 		return 0;
 	}
 
@@ -224,14 +304,14 @@ int main(int argc, char* argv[])
 	if (bind(slisten, (LPSOCKADDR)& sin, sizeof(sin)) == SOCKET_ERROR)
 	{
 		closesocket(slisten);
-		printf("bind error !");
+		printf("Bind error !\n");
 		return 0;
 	}
 
 	if (listen(slisten, 64) == SOCKET_ERROR)
 	{
 		closesocket(slisten);
-		printf("listen error !");
+		printf("Listen error !\n");
 		return 0;
 	}
 
@@ -256,15 +336,15 @@ int main(int argc, char* argv[])
 			continue;
 		if (client == INVALID_SOCKET)
 		{
-			printf("accept error !");
+			printf("Accept error !\n");
 			continue;
 		}
-		printf("\nStart Receiving files...\n");
+		printf("\nStart receiving files...\n");
 		AddLink(client);
 	}
 
-	closesocket(slisten);
 	EmptyLink();
+	closesocket(slisten);
 	WSACleanup();
 
 	return 0;
