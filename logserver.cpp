@@ -1,4 +1,19 @@
-﻿#include <stdio.h>
+﻿/*
+ * ===========================================================================================
+ * = COPYRIGHT
+ *          PAX Computer Technology(Shenzhen) CO., LTD PROPRIETARY INFORMATION
+ *   This software is supplied under the terms of a license agreement or nondisclosure
+ *   agreement with PAX Computer Technology(Shenzhen) CO., LTD and may not be copied or
+ *   disclosed except in accordance with the terms in that agreement.
+ *     Copyright (C) 2020-? PAX Computer Technology(Shenzhen) CO., LTD All rights reserved.
+ * Description: // Detail description about the function of this module,
+ *             // interfaces with the other modules, and dependencies.
+ * Revision History:
+ * Date                  Author                 Action
+ * 2019/12/06          Zeng Tianhao             Create
+ * ===========================================================================================
+ */
+#include <stdio.h>
 #include <stdlib.h>
 #include <winsock2.h>
 #include <process.h> 
@@ -160,13 +175,15 @@ void Setfilename(char* filename, char* linkfilename) {
 	sprintf(filename, ".\\%s_%d-%02d-%02d-%02d_%02d_%02d.txt", tmpstr, 1900 + p->tm_year, 1 + p->tm_mon, p->tm_mday, 8 + p->tm_hour, p->tm_min, p->tm_sec);
 
 	memcpy(linkfilename, filename, 64);
+	printf("filename=%s", linkfilename);
 }
 
 
 void Writetofile(Linkinfo* link) {
 	for (int i = 0; i < link->buffer_len; i++) {
-		if (link->buffer[i] != 0x00)
-			fwrite(&(link->buffer[i]), 1, 1, link->fp);
+		if (link->buffer[i] != 0x00) {
+			int ret = fwrite(&(link->buffer[i]), 1, 1, link->fp);
+		}
 	}
 	memset(link->buffer, 0, SIZE);
 	link->buffer_len = 0;
@@ -189,6 +206,7 @@ void serverthread(void* args) {
 		if (plink) {
 			char recvstr[SIZE] = { 0 };
 			if (recv(plink->fd, recvstr, sizeof(recvstr), NULL) > 0) {
+				printf("recvstr= %s\n", recvstr);
 				if (plink->line == 0) {
 					char header[64] = { 0 }, tag[64] = { 0 };
 					sscanf(recvstr, "<%[a-z]>{\"tag\":\"%[^\"]\"}", header, tag);
